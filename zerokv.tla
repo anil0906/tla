@@ -134,11 +134,10 @@ GetLastReadIndex(n) == IF checkpoint # 0 /\ nState[n].snapshotVersion = 0
                     
 
 NodeRecvMessage(n) ==   /\ Len(abcast) > 0 \* Atleast one message exist in abcast
-                        \* New message exist to receive. 
-                        \* This also handles the case if abcast got purged even if some node is lagging behind.
+                        \* Atleast one New message exist to receive.                     
                         /\ nState[n].snapshotVersion < abcast[Len(abcast)].version
                         /\ LET readOffset == GetLastReadIndex(n)
-                               msg == abcast[readOffset + 1]
+                               msg == abcast[readOffset + 1] 
                                result == FindDataInSeq(nState[n].valueMap, msg.key)
                                exist == result[1]
                                index == result[2]
@@ -155,12 +154,12 @@ Init == /\ checkpoint = 0 \* 0 means no check point recorded.
         /\ abcast = <<>>
         /\ abcastPurgedOffset = 0
         
-Next == \/ AbcastPurge
-        \/ \E n \in Nodes: \/ \E k \in Keys: \/ NodeInsertMsg(n,k)
+Next == \/ \E n \in Nodes: \/ \E k \in Keys: \/ NodeInsertMsg(n,k)
                                              \/ NodeUpdateMsg(n,k)
                            \/ NodeUpdateCheckpoint(n)
                            \/ NodeReset(n)
                            \/ NodeRecvMessage(n)
+\*        \/ AbcastPurge /* paused a purge path until we are sure.
 
 
 
@@ -174,5 +173,5 @@ THEOREM Spec => [](TypeOK /\ Consistent)
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Dec 12 11:51:10 AEDT 2024 by anisha
+\* Last modified Fri Dec 13 09:24:17 AEDT 2024 by anisha
 \* Created Mon Dec 09 21:28:40 AEDT 2024 by anisha

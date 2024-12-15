@@ -13,15 +13,14 @@ Messages == [key: Keys, value: Nat, version: Nat, snapshotVersion: Nat \union {0
 Data == [key: Keys, value: Nat, version: Nat, snapshotVersion: Nat \union {0}] \union {}
 
 
-
 TypeOK == /\ \A i \in DOMAIN abcast: {abcast[i]} \subseteq Messages
-          /\ nodeState = [valueMap: Seq(Data), snapshotVersion: Nat \union {0}, leastSnapshotVersion: Nat \union {0}, leastInstalledVersion: Nat \union {0}, lastProcessedVersion: Nat \union {0}]
+          /\ nodeState \in [valueMap: Seq(Data), snapshotVersion: Nat \union {0}, leastSnapshotVersion: Nat \union {0}, leastInstalledVersion: Nat \union {0}, lastProcessedVersion: Nat \union {0}]
           /\ checkpoint <= Len(abcast)
-          /\ \/ nodeState.leastInstalledVersion = 0 /\ nodeState.leastSnapshotVersion
+          /\ \/ nodeState.leastInstalledVersion = 0 /\ nodeState.leastSnapshotVersion = 0
              \/ nodeState.leastSnapshotVersion < nodeState.leastInstalledVersion   
           /\ checkpoint \in Nat \union {0}
           /\ runCounter \in Nat
-          /\ stateSnapshots = Seq(nodeState)
+          /\ stateSnapshots \in Seq([valueMap: Seq(Data), snapshotVersion: Nat \union {0}, runCounter: Nat])
 
 ASSUME Keys \subseteq Nat
 
@@ -75,8 +74,7 @@ CommitStateUpdate(msg) ==  /\ LET value == [key |-> msg.key, value |-> msg.value
                                                    leastInstalledVersion |-> updatedValueMap[minimumSnapshotIndex]["version"],
                                                    valueMap |-> updatedValueMap]
                                IN /\ nodeState' = newNodeState
-                                  /\ stateSnapshots' = IF runCounter = 1 THEN <<newNodeState>>
-                                                       ELSE SubSeq(stateSnapshots,1, Len(stateSnapshots)-1) \o <<newNodeState>>                           
+                                  /\ stateSnapshots' = stateSnapshots \o <<[valueMap|-> updatedValueMap, snapshotVersion|-> msg.version, runCounter|-> runCounter]>>                         
                             /\ UNCHANGED <<abcast, checkpoint, runCounter>>
 
                                
@@ -107,14 +105,8 @@ NodeUpdateMsg(key) == /\ LET result == FindDataInSeq(nodeState.valueMap, key)
                                              snapshotVersion |-> nodeState.snapshotVersion])
                          /\ UNCHANGED <<nodeState, checkpoint, runCounter, stateSnapshots>>
                          
-\* Update Checkpoint based on leastSnapshotVersion and leastSnapshotVersion
-\* Reasoning: If we have any record where really old snapshotVersion was submitted. May be the really slow node tries to update rarely updated record.
-\* In this case we would need this record as we won't know if there is any future transaction that might rely on this version to certify.
-\* Once we publish this to abcast and replicate back it will update the leastSnapshotVersion in localState and checkpoint can keep moving further.
-\* We also check the leastVersion in localState as we cannot move our checkpoint beyond oldest record.
-\* Either case could happen so we set checkpoint to min (leastSnapshotVersion and leastInstalledVersion.
-\* What would be the case where leastInstalledVersion < leastSnapshotVersion ? As we know for any given state submitted snapshot version is always < submitted version. This might not even be possible
-\* We will remove the check of leastInstalledVersion and will see if that ever happens.
+\* Update Checkpoint based on leastSnapshotVersion and leastInstalledVersion
+\* Update: We are just checking leastSnapshotVersion as snapshot version submitted with a record will always be less than the version itself. 
 
 NodeUpdateCheckpoint ==  /\ checkpoint' = nodeState.leastSnapshotVersion
                          /\ UNCHANGED <<nodeState, abcast, runCounter, stateSnapshots>>  
@@ -157,7 +149,7 @@ NodeRecvMessage ==      /\ Len(abcast) > 0 \* Atleast one message exist in abcas
 Init == /\ checkpoint = 0 \* 0 means no check point recorded.
         /\ nodeState = [snapshotVersion |-> 0, leastSnapshotVersion |-> 0, leastInstalledVersion |-> 0, valueMap |->  <<>>, lastProcessedVersion |-> 0]
         /\ abcast = <<>>
-        /\ stateSnapshots = <<nodeState>>
+        /\ stateSnapshots = <<>>
         /\ runCounter = 1
         
         
@@ -180,5 +172,5 @@ THEOREM Spec => [](TypeOK)
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Dec 13 22:25:47 AEDT 2024 by anisha
+\* Last modified Mon Dec 16 10:56:07 AEDT 2024 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha

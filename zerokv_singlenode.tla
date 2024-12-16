@@ -14,13 +14,14 @@ Data == [key: Keys, value: Nat, version: Nat, snapshotVersion: Nat \union {0}] \
 
 
 TypeOK == /\ \A i \in DOMAIN abcast: {abcast[i]} \subseteq Messages
-          /\ nodeState \in [valueMap: Seq(Data), snapshotVersion: Nat \union {0}, leastSnapshotVersion: Nat \union {0}, leastInstalledVersion: Nat \union {0}, lastProcessedVersion: Nat \union {0}]
-          /\ checkpoint <= Len(abcast)
-          /\ \/ nodeState.leastInstalledVersion = 0 /\ nodeState.leastSnapshotVersion = 0
-             \/ nodeState.leastSnapshotVersion < nodeState.leastInstalledVersion   
+          /\ nodeState \in [valueMap: Seq(Data), snapshotVersion: Nat \union {0}, leastSnapshotVersion: Nat \union {0}, leastInstalledVersion: Nat \union {0}, lastProcessedVersion: Nat \union {0}]    
           /\ checkpoint \in Nat \union {0}
           /\ runCounter \in Nat
           /\ stateSnapshots \in Seq([valueMap: Seq(Data), snapshotVersion: Nat \union {0}, runCounter: Nat])
+          
+DataInvariant == /\ checkpoint <= Len(abcast)
+                 /\ \/ nodeState.leastInstalledVersion = 0 /\ nodeState.leastSnapshotVersion = 0
+                    \/ nodeState.leastSnapshotVersion < nodeState.leastInstalledVersion
 
 ASSUME Keys \subseteq Nat
 
@@ -108,7 +109,8 @@ NodeUpdateMsg(key) == /\ LET result == FindDataInSeq(nodeState.valueMap, key)
 \* Update Checkpoint based on leastSnapshotVersion and leastInstalledVersion
 \* Update: We are just checking leastSnapshotVersion as snapshot version submitted with a record will always be less than the version itself. 
 
-NodeUpdateCheckpoint ==  /\ checkpoint' = nodeState.leastSnapshotVersion
+NodeUpdateCheckpoint ==  /\ checkpoint < nodeState.leastSnapshotVersion
+                         /\ checkpoint' = nodeState.leastSnapshotVersion
                          /\ UNCHANGED <<nodeState, abcast, runCounter, stateSnapshots>>  
                               
 \* TODO: Not required right now.
@@ -165,7 +167,9 @@ Next == \E k \in Keys: \/ NodeInsertMsg(k)
 ConsistentBetweenRuns == \A i, j \in DOMAIN stateSnapshots: \/ /\ i # j
                                                                /\ stateSnapshots[i].runCounter # stateSnapshots[j].runCounter
                                                                /\ stateSnapshots[i].snapshotVersion = stateSnapshots[j].snapshotVersion
-                                                               /\ stateSnapshots[i].valueMap = stateSnapshots[j].valueMap
+                                                               /\ \A k1 \in DOMAIN stateSnapshots[i].valueMap: \A k2 \in DOMAIN stateSnapshots[j].valueMap: \/ /\ stateSnapshots[i].valueMap[k1].key = stateSnapshots[j].valueMap[k2].key
+                                                                                                                                                               /\ stateSnapshots[i].valueMap[k1].value = stateSnapshots[j].valueMap[k2].value
+                                                                                                                                                            \/ stateSnapshots[i].valueMap[k1].key # stateSnapshots[j].valueMap[k2].key
                                                             \/ /\ i # j
                                                                /\ stateSnapshots[i].runCounter = stateSnapshots[j].runCounter
                                                             \/ /\ i # j
@@ -177,9 +181,15 @@ ConsistentBetweenRuns == \A i, j \in DOMAIN stateSnapshots: \/ /\ i # j
 
 Spec == Init /\ [][Next]_<<nodeState, abcast, checkpoint, runCounter, stateSnapshots>>
 
-THEOREM Spec => [](TypeOK /\ ConsistentBetweenRuns)
+THEOREM Invariance == Spec => [](TypeOK /\ ConsistentBetweenRuns /\ DataInvariant)
+
+\* State Constraints to bount the space exploration
+\*/\ \A index \in DOMAIN nodeState.valueMap: nodeState.valueMap[index].value < 10000
+\*/\ runCounter < 1000
+\*/\ Len(abcast) < 100000
+\*/\ checkpoint < 100000
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Dec 16 12:29:59 AEDT 2024 by anisha
+\* Last modified Mon Dec 16 16:48:54 AEDT 2024 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha

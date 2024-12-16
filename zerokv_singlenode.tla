@@ -153,24 +153,33 @@ Init == /\ checkpoint = 0 \* 0 means no check point recorded.
         /\ runCounter = 1
         
         
-Next == \/ \E k \in Keys: \/ NodeInsertMsg(k)
-                          \/ NodeUpdateMsg(k)
-                          \/ NodeUpdateCheckpoint
-                          \/ NodeReset
-                          \/ NodeRecvMessage
+Next == \E k \in Keys: \/ NodeInsertMsg(k)
+                       \/ NodeUpdateMsg(k)
+                       \/ NodeUpdateCheckpoint
+                       \/ NodeReset
+                       \/ NodeRecvMessage
+
+\* This check of checking the equality between value maps works for single Key. 
+\* As for any snapshot in multiple runs, we can only gurrantee if the key exist in both value maps then state is same but there can still be some keys missing.
+\* As they are not hydrated yet.
+ConsistentBetweenRuns == \A i, j \in DOMAIN stateSnapshots: \/ /\ i # j
+                                                               /\ stateSnapshots[i].runCounter # stateSnapshots[j].runCounter
+                                                               /\ stateSnapshots[i].snapshotVersion = stateSnapshots[j].snapshotVersion
+                                                               /\ stateSnapshots[i].valueMap = stateSnapshots[j].valueMap
+                                                            \/ /\ i # j
+                                                               /\ stateSnapshots[i].runCounter = stateSnapshots[j].runCounter
+                                                            \/ /\ i # j
+                                                               /\ stateSnapshots[i].runCounter # stateSnapshots[j].runCounter
+                                                               /\ stateSnapshots[i].snapshotVersion # stateSnapshots[j].snapshotVersion
+                                                            \/ i = j  
 
 
 
-
-\*Consistent == \E r1, r2 \in Nodes: \/ /\ nState[n1].snapshotVersion = nState[n2].snapshotVersion 
-\*                                      /\ nState[n1].valueMap = nState[n2].valueMap
-\*                                   \/ nState[n1].snapshotVersion # nState[n2].snapshotVersion 
-                         
 Spec == Init /\ [][Next]_<<nodeState, abcast, checkpoint, runCounter, stateSnapshots>>
 
-THEOREM Spec => [](TypeOK)
+THEOREM Spec => [](TypeOK /\ ConsistentBetweenRuns)
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Dec 16 10:56:07 AEDT 2024 by anisha
+\* Last modified Mon Dec 16 12:29:59 AEDT 2024 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha

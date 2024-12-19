@@ -1,7 +1,7 @@
 ------------------------- MODULE zerokv_singlenode -------------------------
 
 EXTENDS Integers, Sequences
-
+    
 CONSTANT Keys
 
 VARIABLES nodeState, checkpoint, abcast, stateSnapshots, runCounter 
@@ -19,6 +19,7 @@ TypeOK == /\ \A i \in DOMAIN abcast: {abcast[i]} \subseteq Messages
           /\ runCounter \in Nat
           /\ stateSnapshots \in Seq([valueMap: Seq(Data), snapshotVersion: Nat \union {0}, runCounter: Nat])
           
+         
 DataInvariant == /\ checkpoint <= Len(abcast)
                  /\ \/ nodeState.leastInstalledVersion = 0 /\ nodeState.leastSnapshotVersion = 0
                     \/ nodeState.leastSnapshotVersion < nodeState.leastInstalledVersion
@@ -138,15 +139,16 @@ NodeRecvMessage ==      /\ Len(abcast) > 0 \* Atleast one message exist in abcas
                            IN \/ /\ exist
                                  /\ \/ /\ nodeState.valueMap[index].version > msg.snapshotVersion \* Abort: No installation of valueMap. Only update lastProcessedVersion
                                        /\ AbortStateUpdate(msg)
-                                    \/ /\ nodeState.valueMap[index].version < msg.snapshotVersion
+                                    \/ /\ nodeState.valueMap[index].version <= msg.snapshotVersion
                                        /\ CommitStateUpdate(msg)
-                              \/ LET versionToCompare == IF nodeState.snapshotVersion = 0 \* Either first message from abcast or first message after node reset starting from checkpoint.
-                                                         THEN checkpoint
-                                                         ELSE nodeState.snapshotVersion  
-                                 IN \/ /\ msg.snapshotVersion >= versionToCompare
-                                       /\ CommitStateUpdate(msg)
-                                    \/ /\ msg.snapshotVersion < versionToCompare
-                                       /\ AbortStateUpdate(msg)    
+                              \/ /\ ~exist
+                                 /\ LET versionToCompare == IF nodeState.snapshotVersion = 0 \* Either first message from abcast or first message after node reset starting from checkpoint.
+                                                            THEN checkpoint
+                                                            ELSE nodeState.snapshotVersion  
+                                    IN \/ /\ msg.snapshotVersion >= versionToCompare
+                                          /\ CommitStateUpdate(msg)
+                                       \/ /\ msg.snapshotVersion < versionToCompare
+                                          /\ AbortStateUpdate(msg)    
                                     
 Init == /\ checkpoint = 0 \* 0 means no check point recorded.
         /\ nodeState = [snapshotVersion |-> 0, leastSnapshotVersion |-> 0, leastInstalledVersion |-> 0, valueMap |->  <<>>, lastProcessedVersion |-> 0]
@@ -183,13 +185,40 @@ Spec == Init /\ [][Next]_<<nodeState, abcast, checkpoint, runCounter, stateSnaps
 
 THEOREM Invariance == Spec => [](TypeOK /\ ConsistentBetweenRuns /\ DataInvariant)
 
+
+\* Buggy implementation to check if model can catch this.
+\* Update checkpoint based on leastInstalledVersion instead of leastSnapshotVersion
+
+
+BuggyNodeUpdateCheckpoint ==  /\ checkpoint < nodeState.leastInstalledVersion
+                              /\ checkpoint' = nodeState.leastInstalledVersion
+                              /\ UNCHANGED <<nodeState, abcast, runCounter, stateSnapshots>>
+                              
+BuggyNext == \E k \in Keys: \/ NodeInsertMsg(k)
+                            \/ NodeUpdateMsg(k)
+                            \/ BuggyNodeUpdateCheckpoint
+                            \/ NodeReset
+                            \/ NodeRecvMessage
+
+BuggySpec == Init /\ [][BuggyNext]_<<nodeState, abcast, checkpoint, runCounter, stateSnapshots>>
+
+\* End of Buggy implementation.
+
+
 \* State Constraints to bount the space exploration
 \*/\ \A index \in DOMAIN nodeState.valueMap: nodeState.valueMap[index].value < 10000
 \*/\ runCounter < 1000
 \*/\ Len(abcast) < 100000
 \*/\ checkpoint < 100000
 
+
+\* This did not yield a result after 1 hour 20 mins run. 944,013,418 states found.396,167,014 distinct states
+\*/\ \A index \in DOMAIN nodeState.valueMap: nodeState.valueMap[index].value < 100
+\*/\ runCounter < 100
+\*/\ Len(abcast) < 1000
+\*/\ checkpoint < 1000
+
 =============================================================================
 \* Modification History
-\* Last modified Mon Dec 16 16:48:54 AEDT 2024 by anisha
+\* Last modified Thu Dec 19 07:23:52 IST 2024 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha

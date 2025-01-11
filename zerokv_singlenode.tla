@@ -7,7 +7,7 @@ CONSTANT Keys, Nodes
 
 VARIABLES checkpoint, abcast, runCounter, nodeMap, nodeSnapshotVersion, nodeLastProcessedVersion, nodeCheckpoint
 \* message has fields: key, value, version, snapshotVersion 
-Messages == [key: Keys, value: Nat, version: Nat, snapshotVersion: Nat \union {0}]
+Messages == [operation: {"DATA"}, key: Keys, value: Nat, version: Nat, snapshotVersion: Nat \union {0}] \union [operation: {"CHECKPOINT_INTENT"}, version: Nat, snapshotVersion: Nat]
 
 \* Data to be stored in each node. Check TypeOK for details.
 \* Data is stored in the form of sequence againt valueMap field. TODO: Store in Record format
@@ -35,12 +35,15 @@ MinimumSnapshotVersionKey(n) ==  IF \E k1, k2 \in DOMAIN nodeMap[n]: nodeMap[n][
                                  ELSE IF \E k \in DOMAIN nodeMap[n]: nodeMap[n][k].version # 0 
                                       THEN CHOOSE k \in DOMAIN nodeMap[n]: nodeMap[n][k].version # 0
                                       ELSE "INVALID"
+SendToAbcast(m) == abcast' = abcast \o <<m>>
 
 NodeUpdateCheckpoint(n) ==  /\ LET key == MinimumSnapshotVersionKey(n) 
                                IN /\ key # "INVALID"
                                   /\ checkpoint < nodeMap[n][key].snapshotVersion
-                                  /\ checkpoint' = nodeMap[n][key].snapshotVersion
-                         /\ UNCHANGED <<abcast, runCounter, nodeLastProcessedVersion, nodeSnapshotVersion, nodeMap, nodeCheckpoint>>  
+                                  /\ SendToAbcast([operation |-> "CHECKPOINT_INTENT",
+                                       version |-> Len(abcast) + 1,
+                                       snapshotVersion |-> nodeMap[n][key].snapshotVersion])
+                            /\ UNCHANGED <<runCounter, nodeLastProcessedVersion, nodeSnapshotVersion, nodeMap, nodeCheckpoint, checkpoint>>  
 
 NodeReset(n) == /\ nodeMap' = [nodeMap EXCEPT ![n] = [k \in Keys |-> [value |-> 0, version |-> 0, snapshotVersion |-> 0]]]
                 /\ runCounter' = [runCounter EXCEPT ![n] = runCounter[n] + 1]
@@ -49,14 +52,15 @@ NodeReset(n) == /\ nodeMap' = [nodeMap EXCEPT ![n] = [k \in Keys |-> [value |-> 
                 /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT ![n] = checkpoint]
                 /\ UNCHANGED <<abcast, checkpoint>>
              
-SendToAbcast(m) == abcast' = abcast \o <<m>>
+
 
 \* InsertRecort: Operator to publish to abcast after local checks. We check locally if key does not exist before proceeding with insert operation. TODO: We will remove the local checks to see if certification still pass.
 
 NodeAddMsg(n, key) == /\ SendToAbcast([key |-> key,
                                        value |-> nodeMap[n][key].value + 1,
                                        version |-> Len(abcast) + 1,
-                                       snapshotVersion |-> nodeSnapshotVersion[n]])
+                                       snapshotVersion |-> nodeSnapshotVersion[n],
+                                       operation |-> "DATA"])
                                                 
                       /\ UNCHANGED <<nodeMap, checkpoint, runCounter, nodeSnapshotVersion, nodeLastProcessedVersion, nodeCheckpoint>>
                       
@@ -73,16 +77,39 @@ CommitStateUpdate(n, msg) ==  /\ LET value == [value |-> msg.value, snapshotVers
                                     /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]                        
                               /\ UNCHANGED <<abcast, checkpoint, runCounter, nodeCheckpoint>>
 
+NodeHandleDataMessage(n, msg) == LET versionToCompare == IF nodeMap[n][msg.key].version = 0 THEN nodeCheckpoint[n] ELSE nodeMap[n][msg.key].version
+                                 IN \/ /\ versionToCompare > msg.snapshotVersion \* Abort: No installation of valueMap. Only update lastProcessedVersion
+                                       /\ AbortStateUpdate(n, msg)
+                                    \/ /\ versionToCompare <= msg.snapshotVersion
+                                       /\ CommitStateUpdate(n, msg)
+
+NodeCommitCheckpoint(n, msg) == /\ checkpoint' = msg.snapshotVersion
+                                /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT ![n]=  msg.snapshotVersion]
+                                /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]                            
+                                /\ UNCHANGED <<abcast, checkpoint, runCounter, nodeMap>>
+                                  
+NodeCommitLocalCheckpoint(n, msg) == /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT ![n] = msg.snapshotVersion]
+                                     /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]                            
+                                     /\ UNCHANGED <<abcast, checkpoint, runCounter, nodeCheckpoint, nodeMap>>                                  
+                                       
+NodeHandleCheckpointIntent(n, msg) == LET key == MinimumSnapshotVersionKey(n)
+                                      IN IF nodeMap[n][key].snapshotVersion < msg.version
+                                         THEN AbortStateUpdate(n, msg)
+                                         ELSE IF nodeCheckpoint < nodeMap[n][key].snapshotVersion 
+                                              THEN NodeCommitCheckpoint(n, msg)
+                                              ELSE NodeCommitLocalCheckpoint(n, msg) 
+                                         
 
 NodeRecvMessage(n) == /\ Len(abcast) > 0 \* Atleast one message exist in abcast                
                       /\ nodeLastProcessedVersion[n] < Len(abcast) \* Atleast one New message exist to receive.
                       /\ LET NextIndexToRead == nodeLastProcessedVersion[n] + 1
                              msg == abcast[NextIndexToRead]
-                             versionToCompare == IF nodeMap[n][msg.key].version = 0 THEN nodeCheckpoint[n] ELSE nodeMap[n][msg.key].version
-                         IN \/ /\ versionToCompare > msg.snapshotVersion \* Abort: No installation of valueMap. Only update lastProcessedVersion
-                               /\ AbortStateUpdate(n, msg)
-                            \/ /\ versionToCompare <= msg.snapshotVersion
-                               /\ CommitStateUpdate(n, msg) 
+                         IN \/ /\ msg.operation = "DATA"
+                               /\ NodeHandleDataMessage(n, msg)
+                            \/ /\ msg.operation = "CHECKPOINT_INTENT"
+                               /\ NodeHandleCheckpointIntent(n, msg)
+                               
+
 
 Next == \E n \in Nodes: \/ NodeReset(n)
                         \/ NodeRecvMessage(n)
@@ -150,13 +177,13 @@ THEOREM Invariance == Spec => [](TypeInvariant /\ ConsistencyInvariant /\ Checkp
 \* Above is valid scenario but atleast 2 nodes are required to prove.
 \* Why? -> In single node, if we are recieiving, snapshot is always moving, Reset starts the node at checkpoint. There is no way to send a message on older snapshot and checkpointing at higher using single node.
 \* State Constraints to bound the space exploration for 2 nodes and 2 keys
-\*/\ \A n \in Nodes: \A key \in DOMAIN nodeMap[n]: /\ nodeMap[n][key].value < 3
-\*                                                 /\ runCounter[n] < 3
-\*/\ Len(abcast) < 4
-\*/\ checkpoint < 2
+\*/\ \A n \in Nodes: \A key \in DOMAIN nodeMap[n]: /\ nodeMap[n][key].value < 4
+\*                                                 /\ runCounter[n] < 4
+\*/\ Len(abcast) < 6
+\*/\ checkpoint < 6
 
 
 =============================================================================
 \* Modification History
-\* Last modified Sat Jan 11 23:15:00 AEDT 2025 by anisha
+\* Last modified Sun Jan 12 01:10:38 AEDT 2025 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha

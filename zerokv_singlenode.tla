@@ -130,13 +130,11 @@ NodeCommitLocalCheckpoint(n, msg) == /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT
 \* If submitted snapshotVersion is greater than global checkpoint, then checkpoint can be committed locally and globally.
 \* If global checkpoint is same or greater than intended checkpoint, only local node checkpoint is updated.
 \*
-NodeHandleCheckpointIntent(n, msg) == LET key == MinimumSnapshotVersionKey(nodeMap[n])
-                                      IN /\ key # "INVALID"
-                                         /\ IF nodeMap[n][key].snapshotVersion < msg.snapshotVersion
-                                            THEN AbortStateUpdate(n, msg)
-                                            ELSE IF checkpoint < nodeMap[n][key].snapshotVersion 
-                                                 THEN NodeCommitCheckpoint(n, msg)
-                                                 ELSE NodeCommitLocalCheckpoint(n, msg) 
+NodeHandleCheckpointIntent(n, msg) ==  IF \E index \in DOMAIN abcast: abcast[index].snapshotVersion < msg.snapshotVersion
+                                       THEN AbortStateUpdate(n, msg)
+                                       ELSE IF checkpoint < msg.snapshotVersion 
+                                            THEN NodeCommitCheckpoint(n, msg)
+                                            ELSE NodeCommitLocalCheckpoint(n, msg) 
                                               
 
                                          
@@ -216,10 +214,9 @@ ReplicateFromOffset(localNodeMap, offset, localCheckpoint) == IF offset <= Len(a
                                                                               THEN ReplicateFromOffset(localNodeMap, offset + 1, localCheckpoint)
                                                                               ELSE LET value == [value |-> msg.value, snapshotVersion |-> msg.snapshotVersion, version |-> msg.version]
                                                                                    IN ReplicateFromOffset([localNodeMap EXCEPT ![msg.key] = value], offset + 1, localCheckpoint)
-                                                                      ELSE LET key == MinimumSnapshotVersionKey(localNodeMap)
-                                                                           IN IF key # "INVALID" /\ msg.snapshotVersion <= localNodeMap[key].snapshotVersion
-                                                                              THEN ReplicateFromOffset(localNodeMap, offset + 1, msg.snapshotVersion)
-                                                                              ELSE ReplicateFromOffset(localNodeMap, offset + 1, localCheckpoint)
+                                                                      ELSE IF \E index \in DOMAIN abcast: abcast[index].snapshotVersion < msg.snapshotVersion \* Check if there is any other update between intended checkpoint and version of CHECKPOINT_INTENT message.
+                                                                           THEN ReplicateFromOffset(localNodeMap, offset + 1, localCheckpoint) \* Abort localcheckpoint update
+                                                                           ELSE ReplicateFromOffset(localNodeMap, offset + 1, msg.snapshotVersion) \* Commit localcheckpoint update
                                                               ELSE localNodeMap
 \*
 \* For any selected checlkpoint, node state should be equivalent to as if it is replicated from start without checkpoint.
@@ -243,5 +240,5 @@ THEOREM Invariance == Spec => [](TypeInvariant /\ ConsistencyInvariant /\ Checkp
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Jan 16 14:00:08 AEDT 2025 by anisha
+\* Last modified Thu Jan 16 22:11:54 AEDT 2025 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha

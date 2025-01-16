@@ -14,13 +14,12 @@ CONSTANT Keys, Nodes
 \*
 \* abcast is a append only sequence of Messages. 
 \* checkpoint is global checkpoint that can be read by all nodes. This is updated after checkpoint is certified. Also used at the time of nodeResetOperation to mimic restart of the node.
-\* runCounter is the number of times node has been started. This is not required variable for certification. This is only kept to limit the state exploration.
 \* nodeMap is map implementation to store key value pairs along with snapshotVersion. It's in form of [Keys -> Data].
 \* nodeLastProcessedVersion is there to keep track of last processed message. This will be updated in both commit and abort cases.
 \* nodeCheckpoint stores the local checkpoint for a node. This gets updated at the start of node restoring from global checkpoint and when CHECKPOINT_INTENT message is committed.
 \*
 \*
-VARIABLES checkpoint, abcast, runCounter, nodeMap, nodeLastProcessedVersion, nodeCheckpoint
+VARIABLES checkpoint, abcast, nodeMap, nodeLastProcessedVersion, nodeCheckpoint
 
 
 \*
@@ -44,7 +43,6 @@ ASSUME \A k \in Keys: k # "INVALID" \* Reserved
       
 Init == /\ checkpoint = 0 \* 0 means no check point recorded.
         /\ abcast = <<>>
-        /\ runCounter = [n \in Nodes |-> 1]
         /\ nodeMap = [n \in Nodes |-> [k \in Keys |-> [value |-> 0, version |-> 0, snapshotVersion |-> 0]]]
         /\ nodeLastProcessedVersion = [n \in Nodes |-> 0]
         /\ nodeCheckpoint = [n \in Nodes |-> 0]
@@ -66,24 +64,12 @@ MinimumSnapshotVersionKey(localNodeMap) ==  IF \E k1, k2 \in DOMAIN localNodeMap
                                                  THEN CHOOSE k \in DOMAIN localNodeMap: localNodeMap[k].version # 0
                                                  ELSE "INVALID"
 
-
-\*
-\* Mimics the node restart with empty state of nodeMap.nodeLastProcessedVersion and nodeCheckpoint are necessary for certification and are re-initialised to recorded global checkpoint.
-\*
-NodeReset(n) == /\ nodeMap' = [nodeMap EXCEPT ![n] = [k \in Keys |-> [value |-> 0, version |-> 0, snapshotVersion |-> 0]]]
-                /\ runCounter' = [runCounter EXCEPT ![n] = runCounter[n] + 1]
-                /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = checkpoint]
-                /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT ![n] = checkpoint]
-                /\ UNCHANGED <<abcast, checkpoint>>
-             
-
-
                       
 \*
 \* AbortStateUpdate: Ignores the state update. We only update the nodeLastProcessedVersion for node n. This is required to make progress and to mimic next() function in iterator.
 \*
 AbortStateUpdate(n, msg) == /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]
-                            /\ UNCHANGED <<abcast, checkpoint, runCounter, nodeMap, nodeCheckpoint>>
+                            /\ UNCHANGED <<abcast, checkpoint, nodeMap, nodeCheckpoint>>
 
 \*
 \* CommitStateUpdate: Updates the nodeLastProcessedVersion and nodeMap for node n with new state from message for given key in message msg.
@@ -92,7 +78,7 @@ AbortStateUpdate(n, msg) == /\ nodeLastProcessedVersion' = [nodeLastProcessedVer
 CommitStateUpdate(n, msg) ==  /\ LET value == [value |-> msg.value, snapshotVersion |-> msg.snapshotVersion, version |-> msg.version]
                                  IN /\ nodeMap' = [nodeMap EXCEPT ![n][msg.key] = value] 
                                     /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]                        
-                              /\ UNCHANGED <<abcast, checkpoint, runCounter, nodeCheckpoint>>
+                              /\ UNCHANGED <<abcast, checkpoint, nodeCheckpoint>>
 
 \*
 \* NodeHandleDataMessage:If data does not exist in local, we compare nodeCheckpoint with msg.snapshotVersion. This is to make sure once checkpoint is committed, no transaction below that checkpoint is committed by any node.
@@ -114,7 +100,7 @@ NodeHandleDataMessage(n, msg) == LET versionToCompare == IF nodeMap[n][msg.key].
 NodeCommitCheckpoint(n, msg) == /\ checkpoint' = msg.snapshotVersion
                                 /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT ![n]=  msg.snapshotVersion]
                                 /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]                            
-                                /\ UNCHANGED <<abcast, runCounter, nodeMap>>
+                                /\ UNCHANGED <<abcast, nodeMap>>
                                   
 \*
 \* NodeCommitLocalCheckpoint: In case a particular node is behind in reading message, it is possible that global checkpoint is moved further.
@@ -122,7 +108,7 @@ NodeCommitCheckpoint(n, msg) == /\ checkpoint' = msg.snapshotVersion
 \*
 NodeCommitLocalCheckpoint(n, msg) == /\ nodeCheckpoint' = [nodeCheckpoint EXCEPT ![n] = msg.snapshotVersion]
                                      /\ nodeLastProcessedVersion' = [nodeLastProcessedVersion EXCEPT ![n] = msg.version]                            
-                                     /\ UNCHANGED <<abcast, checkpoint, runCounter, nodeMap>>                                  
+                                     /\ UNCHANGED <<abcast, checkpoint, nodeMap>>                                  
                                        
 
 \*
@@ -165,7 +151,7 @@ NodeUpdateCheckpoint(n) ==  /\ LET key == MinimumSnapshotVersionKey(nodeMap[n])
                                   /\ SendToAbcast([operation |-> "CHECKPOINT_INTENT",
                                        version |-> Len(abcast) + 1,
                                        snapshotVersion |-> nodeMap[n][key].snapshotVersion])
-                            /\ UNCHANGED <<runCounter, nodeLastProcessedVersion, nodeMap, nodeCheckpoint, checkpoint>>
+                            /\ UNCHANGED <<nodeLastProcessedVersion, nodeMap, nodeCheckpoint, checkpoint>>
                            
                             
 \*
@@ -180,17 +166,15 @@ NodeAddMsg(n, key) == /\ SendToAbcast([key |-> key,
                                        snapshotVersion |-> nodeMap[n][MaxInstalledVersionKey(n)].version,
                                        operation |-> "DATA"])
                                                 
-                      /\ UNCHANGED <<nodeMap, checkpoint, runCounter, nodeLastProcessedVersion, nodeCheckpoint>>        
+                      /\ UNCHANGED <<nodeMap, checkpoint, nodeLastProcessedVersion, nodeCheckpoint>>        
 
 
-Next == \E n \in Nodes: \/ NodeReset(n)
-                        \/ NodeRecvMessage(n)
+Next == \E n \in Nodes: \/ NodeRecvMessage(n)
                         \/ NodeUpdateCheckpoint(n)
                         \/ \E key \in Keys: \/ NodeAddMsg(n, key)
         
 TypeInvariant == /\ \A i \in DOMAIN abcast: {abcast[i]} \subseteq Messages
                  /\ checkpoint \in Nat \union {0}
-                 /\ runCounter \in [Nodes -> Nat]
                  /\ nodeMap \in [Nodes -> [Keys -> Data]]
                  /\ nodeLastProcessedVersion \in [Nodes -> Nat]
                  /\ nodeCheckpoint \in [Nodes -> Nat]
@@ -226,7 +210,7 @@ ConsistencyInvariant ==  \/ /\ checkpoint # 0
                                    initialMap == [k \in Keys |-> [value |-> 0, version |-> 0, snapshotVersion |-> 0]] 
                                IN ReplicateFromOffset(checkpointMap, checkpoint + 1, checkpoint) = ReplicateFromOffset(initialMap, 1, 0)
                          \/ checkpoint = 0
-Spec == Init /\ [][Next]_<<nodeMap, abcast, checkpoint, runCounter, nodeLastProcessedVersion, nodeCheckpoint>>
+Spec == Init /\ [][Next]_<<nodeMap, abcast, checkpoint, nodeLastProcessedVersion, nodeCheckpoint>>
 
 THEOREM Invariance == Spec => [](TypeInvariant /\ ConsistencyInvariant /\ CheckpointInvariant)
 
@@ -240,5 +224,5 @@ THEOREM Invariance == Spec => [](TypeInvariant /\ ConsistencyInvariant /\ Checkp
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Jan 16 22:11:54 AEDT 2025 by anisha
+\* Last modified Fri Jan 17 00:07:36 AEDT 2025 by anisha
 \* Created Fri Dec 13 19:20:28 AEDT 2024 by anisha
